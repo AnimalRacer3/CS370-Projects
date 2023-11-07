@@ -26,6 +26,9 @@ try:
             # This is a YouTube video URL
             yt = YouTube(url)
             stream = yt.streams.get_highest_resolution()
+            if os.path.isfile(os.path.join(vid_dir, yt.title + ".mp4")):
+                print(f'{yt.title} already exists in {vid_dir}. Skipping download.')
+                continue
             stream.download(output_path=vid_dir, timeout=timeout_sec)
             print(f'{yt.title} has been successfully downloaded to {vid_dir}')
         else:
@@ -38,6 +41,11 @@ try:
                 else:
                     # If the 'Content-Disposition' header is not present, use the last part of the URL as the file name
                     vid_name = url.split('/')[-1]
+
+                if os.path.isfile(os.path.join(vid_dir, vid_name)):
+                    print(f'{vid_name} already exists in {vid_dir}. Skipping download.')
+                    continue
+                
                 vid_path = os.path.join(vid_dir, vid_name)
 
                 with open(vid_path, 'wb') as file:
