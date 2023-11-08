@@ -5,6 +5,7 @@ import tensorflow as tf
 import cv2
 import warnings
 import numpy as np
+import tarfile
 from pytube import YouTube
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
@@ -58,6 +59,18 @@ except requests.Timeout:
 
 #region Load Model
 model_path = 'assignment_3/Model'
+os.makedirs(model_path, exist_ok=True)
+
+model_url = 'https://drive.google.com/uc?export=download&id=1b6FGwj7vkHl9WgGEw3tURjmnWA8hLjrP'
+response = requests.get(model_url, stream=True)
+if response.status_code == 200:
+    with open(model_path, 'wb') as f:
+        f.write(response.raw.read())
+
+model_file = tarfile.open('Faster_RCNN.tar.gz')
+model_file.extractall(model_path)
+model_file.close()
+
 model = tf.saved_model.load(model_path)
 #endregion
 
