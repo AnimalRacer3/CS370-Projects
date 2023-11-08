@@ -165,3 +165,9 @@ cython_debug/
 
 # Videos
 *.mp4
+
+# AI Model files
+saved_model.pb
+variables.data-00000-of-00001
+variables.index
+assignment_3/Model
