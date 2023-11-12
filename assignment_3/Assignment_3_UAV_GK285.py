@@ -1,3 +1,22 @@
+'''
+In this python file it will run and download the videos to test the AI then using the pretrained model drone_obj_det.pt 
+it will go and run the videos and any detection with confidence above the conf_threshold will be made into a jpg and saved 
+in detections folder. 
+
+In case you run this script without the pretrained model it will go and download the dataset I used for making drone_obj_det.pt 
+then augment the data twice and train the model using that data. it is currently set to 45 epochs with a patience of 5 it takes 
+about 7 minutes per epoch. After training it will take the best pt file and rename it drone_obj_det.pt and put it in the 
+assignments_3 folder.
+
+The model used in this is the YOLOv8 I chose this model over the Faster_RCNN due to a few factors. First is more documentation 
+on the YOLO models, second is the ease of use and of making the annotations, lastly it is capable of being given a video for a 
+source and automatically putting it into frames and ran live for you to see as it detects and tracks the drone. 
+
+Since we were given an extension for this project. I plan on improving the augmentation methods and retraining it to attempt at
+getting better results and capable to track the drone more accuratly in video_1.
+'''
+
+
 #region Imports
 import requests
 import os
@@ -11,10 +30,12 @@ import random
 import shutil
 import yaml
 import appdirs
+import supervision as sv
 import xml.etree.ElementTree as ET
 from pytube import YouTube
 from PIL import Image
 from ultralytics import YOLO
+from matplotlib import pyplot as plt
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 warnings.filterwarnings("ignore")
@@ -52,12 +73,12 @@ vid_urls = [
     'https://drive.google.com/uc?export=download&id=1JYATx5H1L99ke-lKSsuJuyTBLLh8ohtV'
 ]
 
-model_dir = "assignment_3/model"
+vid_dir = 'assignment_3/videos'
+drone_det_dir = os.path.join("assignment_3", "drone_obj_det.pt")
 
-if not os.path.exists(model_dir):
+if not os.path.exists(vid_dir):
 
     # Create a dir to store the videos
-    vid_dir = 'assignment_3/videos'
     os.makedirs(vid_dir, exist_ok=True)
 
     vidNum = 0
@@ -97,7 +118,7 @@ zip_file_path = os.path.join(dataset_dir,'drone_dataset.zip')
 dataset_yolo_dir = os.path.join(dataset_dir, "drone_dataset_yolo\dataset_txt")
 classes_path = os.path.join(dataset_yolo_dir, "classes.txt")
 
-if not os.path.exists(model_dir):
+if not os.path.exists(drone_det_dir):
     os.makedirs(dataset_dir, exist_ok=True)
 
     response = requests.get(dataset_url)
@@ -124,8 +145,13 @@ test_image_dir = os.path.join(test_dir, "images")
 test_txt_dir = os.path.join(test_dir, "labels")
 dataset_yaml_path = os.path.join(dataset_dir, 'data.yaml')
 
-if not os.path.exists(model_dir):
-    yaml_lines = ["names:", "- Drone", "nc: 1", f"test: {os.join(settings['datasets_dir'],'/test/images')}", f"train: {os.join(settings['datasets_dir'],'/train/images')}", f"val: {os.join(settings['datasets_dir'],'/val/images')}"]
+if not os.path.exists(drone_det_dir):
+    yaml_lines = [
+        "names:", "- Drone", "nc: 1", 
+        f"test: {os.path.join(project_dir,'dataset', 'test', 'images')}", 
+        f"train: {os.path.join(project_dir,'dataset', 'train', 'images')}", 
+        f"val: {os.path.join(project_dir,'dataset', 'val', 'images')}"
+        ]
 
     os.makedirs(test_txt_dir, exist_ok=True)
     os.makedirs(test_image_dir, exist_ok=True)
@@ -172,7 +198,7 @@ if not os.path.exists(model_dir):
 #endregion
 
 #region Clean Directories
-if not os.path.exists(model_dir):
+if not os.path.exists(drone_det_dir):
     for root, dirs, files in os.walk(dataset_dir, topdown=False):
         for dir in dirs:
             dir_path = os.path.join(root, dir)
@@ -266,29 +292,89 @@ def augment_and_resize_data(dir, target_frame_size, aug_amount = 1):
                 resize_image(aug_image_path, target_frame_size)
 
 target_frame_size = (640, 640)
-if not os.path.exists(model_dir):
+if not os.path.exists(drone_det_dir):
     augment_and_resize_data(train_dir, target_frame_size, 2)
     augment_and_resize_data(val_dir, target_frame_size, 2)
     augment_and_resize_data(test_dir, target_frame_size, 2)
 #endregion
 
 #region YOLO Model
+model_dir = "assignment_3/model"
 os.makedirs(model_dir, exist_ok=True)
 
-model = YOLO(model_dir + '/yolov8n.pt')
-model.train(
-    data=dataset_yaml_path,
-    epochs=3,
-    patience = 50,
-    batch = -1,
-    imgsz = 640,
-    save = True
+model = YOLO(os.path.join(model_dir, 'yolov8n.pt'))
+model = YOLO(os.path.join(model_dir, 'yolov8n-seg.pt'))
+
+if not os.path.exists(drone_det_dir):
+    model.train(
+        data=dataset_yaml_path,
+        epochs=45,
+        patience = 5,
+        batch = -1,
+        imgsz = 640,
+        save = True
+    )
+    
+    train_folder_dir = os.path.join(model_dir, 'runs', 'detect')
+
+    if os.path.exists(train_folder_dir):
+        for folder in sorted(os.listdir(train_folder_dir), reverse=True):
+            weights_folder_path = os.path.join(train_folder_dir, folder, 'weights')
+            if not os.path.exists(weights_folder_path):
+                continue
+            if 'best.pt' in os.listdir(weights_folder_path):
+                source_path = os.path.join(weights_folder_path, 'best.pt')
+                shutil.move(source_path, drone_det_dir)
+                break
+
+    metrics = model.val()
+
+    print(metrics.box.map)
+    print(metrics.box.map50)
+    print(metrics.box.map75)
+    print(metrics.box.maps)
+else:
+    model = YOLO(drone_det_dir)
+
+#endregion
+
+#region Tracking and Detection
+conf_threshold = 0.3
+det_dir = os.path.join('assignment_3', 'detections')
+os.makedirs(det_dir, exist_ok = True)
+
+frame_counter = 0
+
+box_ann = sv.BoxAnnotator(
+    thickness = 2,
+    text_thickness = 1,
+    text_scale = 0.5
 )
 
-metrics = model.val()
+for video in os.listdir(vid_dir):
+    for result in model.track(source = os.path.join(vid_dir, video), show = True, stream = True):
+        frame = result.orig_img
+        detections = sv.Detections.from_ultralytics(result)
 
-print(metrics.box.map)
-print(metrics.box.map50)
-print(metrics.box.map75)
-print(metrics.box.maps)
+        detections = detections[detections.confidence >= conf_threshold]
+
+        labels = [
+            f"{model.model.names[class_id]} {confidence:0.2f}"
+            for confidence, class_id in zip(detections.confidence, detections.class_id)
+        ]
+
+        frame = box_ann.annotate(scene = frame, detections = detections, labels = labels)
+
+        cv2.imshow('yolov8', frame)
+
+        if len(detections) > 0:
+            frame_filename =f"{os.path.splitext(video)[0]}_frame_{frame_counter}.jpg"
+            frame_path = os.path.join(det_dir, frame_filename)
+            cv2.imwrite(frame_path, frame)
+
+        frame_counter += 1
+
+        #breaks loop if you press esc incase you set source to webcam
+        if(cv2.waitKey(30) == 27):
+            break
 #endregion
