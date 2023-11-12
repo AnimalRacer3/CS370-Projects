@@ -19,6 +19,7 @@ from ultralytics import YOLO
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 warnings.filterwarnings("ignore")
 
+print("TensorFlow version:", tf.__version__)
 print("Num GPUs Available:", len(tf.config.experimental.list_physical_devices('GPU')))
 #endregion
 
@@ -124,7 +125,7 @@ test_txt_dir = os.path.join(test_dir, "labels")
 dataset_yaml_path = os.path.join(dataset_dir, 'data.yaml')
 
 if not os.path.exists(model_dir):
-    yaml_lines = ["names:", "- Drone", "nc: 1", "test: /test/images", "train: /train/images", "val: /val/images"]
+    yaml_lines = ["names:", "- Drone", "nc: 1", f"test: {os.join(settings['datasets_dir'],'/test/images')}", f"train: {os.join(settings['datasets_dir'],'/train/images')}", f"val: {os.join(settings['datasets_dir'],'/val/images')}"]
 
     os.makedirs(test_txt_dir, exist_ok=True)
     os.makedirs(test_image_dir, exist_ok=True)
