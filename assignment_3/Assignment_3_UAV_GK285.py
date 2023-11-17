@@ -34,6 +34,7 @@ import albumentations as A
 from pytube import YouTube
 from ultralytics import YOLO
 from random import randrange
+from filterpy.kalman import KalmanFilter
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 warnings.filterwarnings("ignore")
@@ -302,6 +303,7 @@ def main():
             A.ColorJitter(p = 0.2),
             A.MotionBlur(p = 0.2),
             A.RandomFog(p = 0.2),
+            A.RandomBrightnessContrast(p=0.2),
             A.RandomRain(p = 0.2)
         ], bbox_params=A.BboxParams(format="yolo", min_area= 0, min_visibility= 0))
 
@@ -394,7 +396,30 @@ def main():
     #region Tracking and Detection
     print("Object tracking and detection...")
 
-    conf_threshold = 0.36
+    # Kalman filter initialization
+    kf = KalmanFilter(dim_x=4, dim_z=2)
+
+    measurement_noise = 12
+    process_noise = 50
+
+    line_thickness = 2
+    line_color = (0, 0, 255)
+
+    # Set initial parameters for the Kalman filter
+    # You need to adjust these based on your specific scenario
+    initial_state = np.array([0, 0, 0, 0])  # Initial state (x, y, vx, vy)
+    kf.x = initial_state
+    kf.F = np.array([[1, 0, 1, 0],
+                    [0, 1, 0, 1],
+                    [0, 0, 1, 0],
+                    [0, 0, 0, 1]])  # State transition matrix
+    kf.H = np.array([[1, 0, 0, 0],
+                    [0, 1, 0, 0]])  # Observation matrix
+    kf.P *= 1e3  # Covariance matrix
+    kf.R = np.diag([measurement_noise, measurement_noise])  # Measurement noise
+    kf.Q = np.diag([process_noise, process_noise, process_noise, process_noise])  # Process noise
+
+    conf_threshold = 0.3
     det_dir = os.path.join('assignment_3', 'detections')
     os.makedirs(det_dir, exist_ok = True)
 
@@ -407,11 +432,63 @@ def main():
     )
 
     for video in os.listdir(vid_dir):
-        for result in model.track(source = os.path.join(vid_dir, video), show = True, stream = True):
+        video_path = os.path.join(vid_dir, video)
+
+        # Open the video file
+        cap = cv2.VideoCapture(video_path)
+
+        # Get the total number of frames
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+        # Release the video capture object
+        cap.release()
+        for result in model.track(source = video_path, show = True, stream = True):
             frame = result.orig_img
             detections = sv.Detections.from_ultralytics(result)
 
             detections = detections[detections.confidence >= conf_threshold]
+            # Kalman filter update with detections
+            for detection in detections:
+                bbox_coordinates, _, confidence, _, _ = detection
+                x, y, w, h = bbox_coordinates  # Extract x and y coordinates from the bounding box
+
+                measurement = np.array([x, y])
+
+                kf.Q = np.diag([process_noise * (x ** 2), process_noise * (y ** 2), process_noise * (w ** 2), process_noise * (h ** 2)])
+
+                kf.predict()
+                kf.update(measurement)
+
+                # Retrieve the esitmated status from Kalman filter
+                estimated_states = kf.x
+                estimated_x, estimated_y = int(estimated_states[0]), int(estimated_states[1])
+
+                bbox_middle_width = int(estimated_x + (int(w - x))/2)
+                bbox_middle_height = int(estimated_y + (int(h - y))/2)
+
+                line_thickness = int(max(2, min(int((w-x) * (h-y) / 400), 8)))
+
+                completion_percentage = frame_counter/total_frames
+
+                red = int(255 * np.cos(completion_percentage * np.pi / 2))
+                green = int(255 * np.sin(completion_percentage * np.pi / 2))
+                blue = int(255 * np.cos((completion_percentage + 1/3) * np.pi / 2))
+
+                line_color = (
+                    red,
+                    green,
+                    blue
+                )
+
+                if 'history' not in locals():
+                    history = []
+                history.append([(bbox_middle_width, bbox_middle_height), line_color, line_thickness])
+
+            if 'history' in locals():
+                for i in range(1, len(history)):
+                    point1, _, _ = history[i-1]
+                    point2, color, thickness = history[i-1]
+                    cv2.line(frame, point1, point2, color, thickness)
 
             labels = [
                 f"{model.model.names[class_id]} {confidence:0.2f}"
@@ -436,10 +513,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
-'''
-    Things I want/need to add:
-        - Kalmen filters (filterpy)
-        - Zoom out augmentation for 80%
-        - test with 50 epochs then do the final with 1000 epochs
-'''
