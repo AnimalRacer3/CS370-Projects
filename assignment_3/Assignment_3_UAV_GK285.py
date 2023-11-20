@@ -1,22 +1,3 @@
-'''
-In this python file it will run and download the videos to test the AI then using the pretrained model drone_obj_det.pt 
-it will go and run the videos and any detection with confidence above the conf_threshold will be made into a jpg and saved 
-in detections folder. 
-
-In case you run this script without the pretrained model it will go and download the dataset I used for making drone_obj_det.pt 
-then augment the data twice and train the model using that data. it is currently set to 45 epochs with a patience of 5 it takes 
-about 7 minutes per epoch. After training it will take the best pt file and rename it drone_obj_det.pt and put it in the 
-assignments_3 folder.
-
-The model used in this is the YOLOv8 I chose this model over the Faster_RCNN due to a few factors. First is more documentation 
-on the YOLO models, second is the ease of use and of making the annotations, lastly it is capable of being given a video for a 
-source and automatically putting it into frames and ran live for you to see as it detects and tracks the drone. 
-
-Since we were given an extension for this project. I plan on improving the augmentation methods and retraining it to attempt at
-getting better results and capable to track the drone more accuratly in video_1.
-'''
-
-
 #region Imports
 import requests
 import os
@@ -27,7 +8,8 @@ import zipfile
 import random
 import shutil
 import yaml
-import torch
+import time
+import keyboard
 import numpy as np
 import supervision as sv
 import albumentations as A
@@ -208,6 +190,9 @@ def main():
 
     #region Clean Directories
     print("Cleaning directories...")
+    def zip_and_delete(path, zip_path):
+        shutil.make_archive(zip_path, 'zip', path)
+        shutil.rmtree(path)
 
     if not os.path.exists(drone_det_dir):
         for root, dirs, files in os.walk(dataset_dir, topdown=False):
@@ -296,16 +281,23 @@ def main():
         # Augmentation with Albumentations
         transform = A.Compose([
             A.Blur(p = 0.2),
-            A.RandomCrop(width = int(randrange(60, 80)*target_size[0]/100), height = int(randrange(60, 80)*target_size[1]/100), p = 0.1),
+            A.RandomCrop(width = int(randrange(60, 80)*target_size[0]/100), height = int(randrange(60, 80)*target_size[1]/100), p = 0.2),
             A.Rotate(limit = 20, p = 0.2, border_mode=cv2.BORDER_CONSTANT),
             A.HorizontalFlip(p = 0.5),
-            A.RGBShift(r_shift_limit = 25, g_shift_limit = 25, b_shift_limit = 25, p = 0.1),
+            A.RGBShift(r_shift_limit = 25, g_shift_limit = 25, b_shift_limit = 25, p = 0.2),
             A.ColorJitter(p = 0.2),
             A.MotionBlur(p = 0.2),
             A.RandomFog(p = 0.2),
             A.RandomBrightnessContrast(p=0.2),
-            A.RandomRain(p = 0.2)
-        ], bbox_params=A.BboxParams(format="yolo", min_area= 0, min_visibility= 0))
+            A.RandomRain(p = 0.2),
+            A.Downscale(p=0.2),
+            A.ZoomBlur(p = 0.2),
+            A.RandomScale(scale_limit=(0.8, 1.2), p = 2),
+            A.RandomSizedBBoxSafeCrop(width=target_size[0], height=target_size[1], p = 0.2),
+            A.ElasticTransform(alpha=120, sigma = 120*0.05, alpha_affine=120*0.03, p = 0.2),
+            A.RandomContrast(limit=0.2, p=0.2),
+            A.GridDistortion(p=0.2)
+        ], bbox_params=A.BboxParams(format="yolo", min_area= 1024, min_visibility= 0.6))
 
         transformed = transform(image=image, bboxes = bboxes)
         image = transformed["image"]
@@ -338,7 +330,7 @@ def main():
                     
                     cv2.imwrite(image_path, resize_image(image_path, target_frame_size))
 
-    target_frame_size = (640, 640)
+    target_frame_size = (384, 640)
 
     dirs_to_loop = [train_dir, val_dir, test_dir]
     dirs_to_check = [train_image_dir, val_image_dir, test_image_dir]
@@ -347,40 +339,53 @@ def main():
         matching_files = [file for file in os.listdir(image_dir) if file.startswith("aug_")]
         if not matching_files:
             print("\t- Augmenting dataset from dir...")
-            augment_and_resize_data(dir, target_frame_size, 2)
+            augment_and_resize_data(dir, target_frame_size, 8)
     #endregion
 
     #region YOLO Model
     print("Creating YOLOv8 model...")
-
     model_dir = "assignment_3/model"
     os.makedirs(model_dir, exist_ok=True)
 
     model = YOLO(os.path.join(model_dir, 'yolov8n.pt'))
     #model = YOLO(os.path.join(model_dir, 'yolov8n-seg.pt'))
 
-    if not os.path.exists(drone_det_dir):
+    def save_model(train_folder_dir, drone_det_dir):
+        for folder in sorted(os.listdir(train_folder_dir), reverse=True):
+            weights_folder_path = os.path.join(train_folder_dir, folder, 'weights')
+            if not os.path.exists(weights_folder_path):
+                continue
+            if 'best.pt' in os.listdir(weights_folder_path):
+                source_path = os.path.join(weights_folder_path, 'best.pt')
+                shutil.move(source_path, drone_det_dir)
+                break
+    
+    def train_yolov8(model, dataset_yaml_path, model_dir, drone_det_dir, seed_given = 0):
+        paused = False
+        def on_key_event(e):
+            nonlocal paused
+            if e.name == 'end':
+                paused = not paused
+                print(f"Training {'paused' if paused else 'resumed'}.")
+        
+        keyboard.hook(on_key_event)
+
         model.train(
             data=dataset_yaml_path,
-            epochs=100,
-            patience = 10,
+            epochs=10000,
+            patience = 100,
             batch = -1,
             imgsz = 640,
             save = True,
-            device = '0'
+            device = '0',
+            seed = seed_given,
+            dropout = 0.2
         )
-        
+            
         train_folder_dir = os.path.join(model_dir, 'runs', 'detect')
 
         if os.path.exists(train_folder_dir):
-            for folder in sorted(os.listdir(train_folder_dir), reverse=True):
-                weights_folder_path = os.path.join(train_folder_dir, folder, 'weights')
-                if not os.path.exists(weights_folder_path):
-                    continue
-                if 'best.pt' in os.listdir(weights_folder_path):
-                    source_path = os.path.join(weights_folder_path, 'best.pt')
-                    shutil.move(source_path, drone_det_dir)
-                    break
+            save_model(train_folder_dir, drone_det_dir)
 
         metrics = model.val()
 
@@ -388,25 +393,59 @@ def main():
         print(metrics.box.map50)
         print(metrics.box.map75)
         print(metrics.box.maps)
+
+        return model
+
+    if not os.path.exists(drone_det_dir):
+        model = train_yolov8(model, dataset_yaml_path, model_dir, drone_det_dir)  
     else:
         model = YOLO(drone_det_dir)
-
     #endregion
 
     #region Tracking and Detection
     print("Object tracking and detection...")
+    global prev_time, prev_pos, known_size, prev_dist
+    prev_time = time.time()
+    prev_pos = np.array([0,0])
+
+    known_size = 31
+    prev_dist = 0
+
+    def est_relative_dist(apparent_size):
+        global prev_dist, known_size
+        focal_length = 500
+
+        cur_dist = (known_size * focal_length) / apparent_size
+        relative_distance_change = cur_dist - prev_dist
+
+        prev_dist = cur_dist
+
+        return relative_distance_change
+
+    def calc_speed(cur_pos):
+        global prev_pos, prev_time
+        cur_time = time.time()
+        time_elapsed = cur_time - prev_time
+
+        displacement = np.linalg.norm(cur_pos - prev_pos)
+
+        speed = displacement / time_elapsed if time_elapsed > 0 and time_elapsed < 3 else 0
+
+        prev_pos = cur_pos
+        prev_time = cur_time
+
+        return speed
 
     # Kalman filter initialization
     kf = KalmanFilter(dim_x=4, dim_z=2)
 
-    measurement_noise = 12
+    measurement_noise = 25
     process_noise = 50
 
     line_thickness = 2
     line_color = (0, 0, 255)
 
     # Set initial parameters for the Kalman filter
-    # You need to adjust these based on your specific scenario
     initial_state = np.array([0, 0, 0, 0])  # Initial state (x, y, vx, vy)
     kf.x = initial_state
     kf.F = np.array([[1, 0, 1, 0],
@@ -419,7 +458,7 @@ def main():
     kf.R = np.diag([measurement_noise, measurement_noise])  # Measurement noise
     kf.Q = np.diag([process_noise, process_noise, process_noise, process_noise])  # Process noise
 
-    conf_threshold = 0.3
+    conf_threshold = 0.2
     det_dir = os.path.join('assignment_3', 'detections')
     os.makedirs(det_dir, exist_ok = True)
 
@@ -432,6 +471,7 @@ def main():
     )
 
     for video in os.listdir(vid_dir):
+        history = []
         video_path = os.path.join(vid_dir, video)
 
         # Open the video file
@@ -447,55 +487,64 @@ def main():
             detections = sv.Detections.from_ultralytics(result)
 
             detections = detections[detections.confidence >= conf_threshold]
-            # Kalman filter update with detections
-            for detection in detections:
-                bbox_coordinates, _, confidence, _, _ = detection
-                x, y, w, h = bbox_coordinates  # Extract x and y coordinates from the bounding box
+            if len(detections) < 1:
+                continue
+            best_detection_index = 0
+            for i in range(len(detections.confidence)):
+                if detections.confidence[best_detection_index] < detections.confidence[i]:
+                    best_detection_index = i
+            detection = detections[best_detection_index]
 
-                measurement = np.array([x, y])
+            # Kalman filter update with detection
+            bbox_coordinates = detection.xyxy[0]
+            conf = detection.confidence[0]
+            x, y, w, h = bbox_coordinates
+            width = w - x
+            height = h - y
 
-                kf.Q = np.diag([process_noise * (x ** 2), process_noise * (y ** 2), process_noise * (w ** 2), process_noise * (h ** 2)])
+            measurement = np.array([x, y])
+                
+            speed = calc_speed(measurement)
+            distance = est_relative_dist(width)
+            size = (width + height) / 2
+            kf.Q = np.diag([speed, distance, size, process_noise])
 
-                kf.predict()
-                kf.update(measurement)
+            kf.R = np.diag([conf, measurement_noise])
 
-                # Retrieve the esitmated status from Kalman filter
-                estimated_states = kf.x
-                estimated_x, estimated_y = int(estimated_states[0]), int(estimated_states[1])
+            kf.predict()
+            kf.update(measurement)
 
-                bbox_middle_width = int(estimated_x + (int(w - x))/2)
-                bbox_middle_height = int(estimated_y + (int(h - y))/2)
+            # Retrieve the esitmated status from Kalman filter
+            estimated_x, estimated_y, _, _ = kf.x
+            detection.xyxy = np.array([[estimated_x, estimated_y, w, h]])
 
-                line_thickness = int(max(2, min(int((w-x) * (h-y) / 400), 8)))
+            bbox_middle_width = int(estimated_x + (width)/2)
+            bbox_middle_height = int(estimated_y + (height)/2)
 
-                completion_percentage = frame_counter/total_frames
+            line_thickness = int(max(2, min(int(width * height / 400), 8)))
 
-                red = int(255 * np.cos(completion_percentage * np.pi / 2))
-                green = int(255 * np.sin(completion_percentage * np.pi / 2))
-                blue = int(255 * np.cos((completion_percentage + 1/3) * np.pi / 2))
+            completion_percentage = frame_counter/total_frames
 
-                line_color = (
-                    red,
-                    green,
-                    blue
-                )
+            red = int(255 * np.cos(completion_percentage * np.pi / 2))
+            green = int(255 * np.sin(completion_percentage * np.pi / 2))
+            blue = int(255 * np.cos((completion_percentage + 1/3) * np.pi / 2))
 
-                if 'history' not in locals():
-                    history = []
-                history.append([(bbox_middle_width, bbox_middle_height), line_color, line_thickness])
+            line_color = (
+                red,
+                green,
+                blue
+            )
 
-            if 'history' in locals():
-                for i in range(1, len(history)):
-                    point1, _, _ = history[i-1]
-                    point2, color, thickness = history[i-1]
-                    cv2.line(frame, point1, point2, color, thickness)
+            history.append([(bbox_middle_width, bbox_middle_height), line_color, line_thickness])
 
-            labels = [
-                f"{model.model.names[class_id]} {confidence:0.2f}"
-                for confidence, class_id in zip(detections.confidence, detections.class_id)
-            ]
+            for i in range(1, len(history)):
+                point1, _, _ = history[i-1]
+                point2, color, thickness = history[i-1]
+                cv2.line(frame, point1, point2, color, thickness)
 
-            frame = box_ann.annotate(scene = frame, detections = detections, labels = labels)
+            label = [f"{model.model.names[detection.class_id[0]]} {detection.confidence[0]:0.2f}"]
+
+            frame = box_ann.annotate(scene = frame, detections = detection, labels = label)
 
             cv2.imshow('yolov8', frame)
 
@@ -509,6 +558,8 @@ def main():
             #breaks loop if you press esc incase you set source to webcam
             if(cv2.waitKey(30) == 27):
                 break
+
+    zip_and_delete(det_dir, det_dir)
     #endregion
 
 if __name__ == '__main__':

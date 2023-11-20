@@ -2,8 +2,8 @@ task: detect
 mode: train
 model: assignment_3/model\yolov8n.pt
 data: assignment_3\dataset\data.yaml
-epochs: 100
-patience: 10
+epochs: 10000
+patience: 1000
 batch: -1
 imgsz: 640
 save: true
@@ -17,7 +17,7 @@ exist_ok: false
 pretrained: true
 optimizer: auto
 verbose: true
-seed: 0
+seed: 123
 deterministic: true
 single_cls: false
 rect: false
@@ -30,7 +30,7 @@ profile: false
 freeze: null
 overlap_mask: true
 mask_ratio: 4
-dropout: 0.0
+dropout: 0.2
 val: true
 split: val
 save_json: false
